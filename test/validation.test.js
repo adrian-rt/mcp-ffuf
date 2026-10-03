@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { __test__ } from "../src/ffuf.js";
+import { mkdtemp, writeFile, chmod, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, delimiter } from "node:path";
+import { __test__, fuzzPath } from "../src/ffuf.js";
 
 const { validateWordlist, validateCodeList, validateExtensions, parseResults } = __test__;
 
@@ -49,4 +52,30 @@ test("parseResults tolerates garbage", () => {
   const r = parseResults("not json at all");
   assert.deepEqual(r.results, []);
   assert.ok(r.raw);
+});
+
+test("fuzzPath reads structured JSON from ffuf output file, not quiet stdout", { skip: process.platform === "win32" }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mcp-ffuf-test-"));
+  const oldPath = process.env.PATH;
+  try {
+    const wordlist = join(dir, "words.txt");
+    const fake = join(dir, "ffuf");
+    await writeFile(wordlist, "health\n");
+    await writeFile(fake, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const output = args[args.indexOf('-o') + 1];
+if (!output || output === '-') process.exit(2);
+fs.writeFileSync(output, JSON.stringify({ results: [{ url: 'http://127.0.0.1/health', status: 200 }] }));
+process.stdout.write('health\\n');
+`);
+    await chmod(fake, 0o755);
+    process.env.PATH = dir + delimiter + oldPath;
+    const result = await fuzzPath({ url: "http://127.0.0.1/FUZZ", wordlist, timeoutMs: 5000 });
+    assert.deepEqual(result.results, [{ url: "http://127.0.0.1/health", status: 200 }]);
+  } finally {
+    if (oldPath === undefined) delete process.env.PATH;
+    else process.env.PATH = oldPath;
+    await rm(dir, { recursive: true, force: true });
+  }
 });

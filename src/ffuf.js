@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { constants as FS } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const execFileP = promisify(execFile);
 
@@ -31,12 +33,22 @@ function validateExtensions(v) {
 }
 
 async function runFfuf(args, { timeoutMs }) {
-  args.push("-of", "json", "-o", "-", "-s");
-  const { stdout } = await execFileP("ffuf", args, {
-    timeout: timeoutMs,
-    maxBuffer: 32 * 1024 * 1024,
-  });
-  return parseResults(stdout);
+  const directory = await mkdtemp(join(tmpdir(), "mcp-ffuf-"));
+  try {
+    const output = join(directory, "results.json");
+    args.push("-of", "json", "-o", output, "-s");
+    await execFileP("ffuf", args, {
+      timeout: timeoutMs,
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    const result = parseResults(await readFile(output, "utf8"));
+    if (result.raw || !Array.isArray(result.results)) {
+      throw new Error("ffuf output file did not contain a valid JSON results array");
+    }
+    return result;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 function parseResults(out) {
